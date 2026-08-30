@@ -797,7 +797,18 @@ app.MapPost("/api/reveal", (RevealRequest req) =>
         string target = req.Path;
         if (string.IsNullOrWhiteSpace(target)) return Results.BadRequest(new { error = "empty path" });
         if (!Directory.Exists(target) && !File.Exists(target)) Directory.CreateDirectory(target);
-        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{target}\"") { UseShellExecute = true });
+
+        // Opens a file manager window on the machine running the app. Meaningless on a headless
+        // server — there is no desktop to show it on — so only attempt it where one plausibly exists.
+        if (OperatingSystem.IsWindows())
+            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{target}\"") { UseShellExecute = true });
+        else if (OperatingSystem.IsMacOS())
+            Process.Start(new ProcessStartInfo("open", $"\"{target}\"") { UseShellExecute = true });
+        else if (OperatingSystem.IsLinux() && !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY")))
+            Process.Start(new ProcessStartInfo("xdg-open", $"\"{target}\"") { UseShellExecute = true });
+        else
+            return Results.Ok(new { ok = false, path = target, message = "no desktop to open a file manager on; the path was created if it did not exist" });
+
         return Results.Ok(new { ok = true });
     }
     catch (Exception ex)

@@ -9,8 +9,13 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
     <PublishSingleFile>true</PublishSingleFile>
-    <SelfContained>false</SelfContained>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!--
+      No RuntimeIdentifier here on purpose: hardcoding one (e.g. win-x64) makes `dotnet build` /
+      `dotnet run` produce a Windows apphost that cannot execute on Linux. Pass the target platform
+      at publish time instead (`-r win-x64` or `-r linux-x64`, see README), and list both below so
+      restore can resolve either without extra flags during plain `dotnet build`/`dotnet run`.
+    -->
+    <RuntimeIdentifiers>win-x64;linux-x64</RuntimeIdentifiers>
     <ServerGarbageCollection>true</ServerGarbageCollection>
   </PropertyGroup>
 

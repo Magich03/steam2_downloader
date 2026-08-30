@@ -1,0 +1,39 @@
+# systemd unit for running steam2browser headless on a VPS (e.g. Arch Linux).
+#
+# Install:
+#   sudo useradd --system --create-home --home-dir /opt/steam2browser steam2browser
+#   sudo mkdir -p /opt/steam2browser
+#   sudo cp -r publish/* /opt/steam2browser/          # the linux-x64 publish output, see README
+#   sudo mkdir -p /opt/steam2browser/steam2info       # must exist before start: ProtectSystem=strict
+#   sudo chown -R steam2browser:steam2browser /opt/steam2browser
+#   sudo cp contrib/steam2browser.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now steam2browser
+#
+# The app binds to 127.0.0.1 only (never 0.0.0.0), so it is not reachable from outside the VPS by
+# itself. Reach it over SSH port forwarding — see the README's "Arch Linux VPS" section — rather
+# than opening a firewall port to it, since it has no authentication of its own.
+
+[Unit]
+Description=Steam2 Downloader (headless)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=steam2browser
+Group=steam2browser
+WorkingDirectory=/opt/steam2browser
+ExecStart=/opt/steam2browser/steam2browser --no-browser --port=5099
+Restart=on-failure
+RestartSec=5
+
+# Everything the app writes lives under WorkingDirectory/steam2info/, so only that needs to be
+# writable; the rest of the filesystem stays read-only to this service.
+ProtectSystem=strict
+ReadWritePaths=/opt/steam2browser/steam2info
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
