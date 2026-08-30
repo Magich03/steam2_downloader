@@ -65,8 +65,29 @@ below with `-r linux-x64` instead of `-r win-x64`).
 ./steam2browser --no-browser --port=6000     # different port
 ```
 
-It only ever binds to `127.0.0.1`, so it is not reachable from the internet even with no firewall
-at all — the only way in is through the SSH tunnel below (or a shell on the VPS itself).
+By default it only binds to `127.0.0.1`, so it is not reachable from the internet even with no
+firewall at all — the only way in is through the SSH tunnel below (or a shell on the VPS itself).
+
+Pass `--public` instead to bind every interface (`0.0.0.0`) and reach it directly at
+`http://your-vps-ip:5099/` from any device, no SSH tunnel needed:
+
+```
+./steam2browser --no-browser --public
+```
+
+**The app has no login of its own.** With `--public`, anyone who can reach that IP and port can
+browse the catalog, start downloads and run extractions on your VPS — there is no username,
+password or token gating any of it. If you use `--public`, restrict who can actually reach the
+port with a firewall, e.g. with `ufw` on Arch:
+
+```
+sudo pacman -S ufw
+sudo ufw default deny incoming
+sudo ufw allow from YOUR.HOME.IP.ADDR to any port 5099
+sudo ufw enable
+```
+
+Without a rule like that, the port is open to the entire internet the moment `--public` is used.
 
 ### Keep it running: systemd
 
