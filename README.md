@@ -9,7 +9,9 @@ chains of `.dat` payloads with `.blob` metadata beside them, so no single file i
 version — extracting version *N* needs every version below it. This tool exists because working
 that out by hand across 58 441 blobs is not practical.
 
-Single self-contained executable for Windows. It starts a local server and opens your browser.
+Single self-contained executable for Windows or Linux. It starts a local server and opens your
+browser — or, on a headless Linux server, runs with no browser at all and is reached through an
+SSH tunnel instead (see [Run headless on Arch Linux](#run-headless-on-arch-linux-or-any-linux-vps)).
 
 ![Steam2 Downloader browsing depot 841 (Portal 2): the depot list, the delta chain planner with its download size estimate, and the version history expanded on v37 to show the four changed files.](assets/img1.png)
 
@@ -33,6 +35,76 @@ The release embeds a snapshot of the whole catalog, so the first run needs no ne
 in well under a second. Fetching that index instead means 13 MB of `*_dates.txt` plus two ~20 MB
 directory listings for the sizes — about 54 MB before anything appears. **Re-download index** in
 Settings pulls a fresher one when you want it.
+
+## Run headless on Arch Linux (or any Linux VPS)
+
+The app is a small local web server: it listens on `127.0.0.1` and serves its UI as a website,
+which is normally opened for you in a browser on the same machine. A VPS has no desktop to open a
+browser on, so instead you run the server headless there and forward its port to a browser on
+*your* machine over SSH — the app itself is never driven from the VPS's own console, only its port
+is reached through one.
+
+### Get the binary
+
+[Download `steam2browser-linux-x64.tar.gz`](https://github.com/extremebleem/steam2_downloader/releases/latest/download/steam2browser-linux-x64.tar.gz)
+— self-contained, no .NET install needed:
+
+```
+curl -LO https://github.com/extremebleem/steam2_downloader/releases/latest/download/steam2browser-linux-x64.tar.gz
+mkdir -p ~/steam2browser && tar -xzf steam2browser-linux-x64.tar.gz -C ~/steam2browser
+cd ~/steam2browser && chmod +x steam2browser
+```
+
+Or build it yourself (`sudo pacman -S dotnet-sdk`, then see [Build from source](#build-from-source)
+below with `-r linux-x64` instead of `-r win-x64`).
+
+### Run it
+
+```
+./steam2browser --no-browser                # opens http://127.0.0.1:5099, no browser launch attempted
+./steam2browser --no-browser --port=6000     # different port
+```
+
+It only ever binds to `127.0.0.1`, so it is not reachable from the internet even with no firewall
+at all — the only way in is through the SSH tunnel below (or a shell on the VPS itself).
+
+### Keep it running: systemd
+
+A ready-to-edit unit is in [`contrib/steam2browser.service`](contrib/steam2browser.service)
+(also included in the release tarball):
+
+```
+sudo useradd --system --create-home --home-dir /opt/steam2browser steam2browser
+sudo mkdir -p /opt/steam2browser/steam2info
+sudo cp -r ~/steam2browser/* /opt/steam2browser/
+sudo chown -R steam2browser:steam2browser /opt/steam2browser
+sudo cp /opt/steam2browser/steam2browser.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now steam2browser
+sudo systemctl status steam2browser   # confirm it's up
+journalctl -u steam2browser -f        # follow its log
+```
+
+### Reach the UI from your own machine
+
+Forward the VPS's loopback port to your own machine over SSH, then open the UI in a browser
+locally — none of your traffic leaves the SSH connection:
+
+```
+ssh -N -L 5099:127.0.0.1:5099 youruser@your-vps
+```
+
+Leave that running and open `http://127.0.0.1:5099/` in a browser on your own machine. To make
+this permanent, add to `~/.ssh/config` on your machine:
+
+```
+Host steam2vps
+    HostName your-vps
+    User youruser
+    LocalForward 5099 127.0.0.1:5099
+```
+
+then just `ssh steam2vps` whenever you want the tunnel up, and browse to the same URL.
 
 ## Features
 
@@ -103,17 +175,25 @@ sooner.
 
 ## Build from source
 
-Needs the .NET 10 SDK.
+Needs the .NET 10 SDK (on Arch: `sudo pacman -S dotnet-sdk`).
 
 ```
 cd Steam2Browser
 dotnet run
 ```
 
-Release build:
+`dotnet run` targets whatever platform you're on — Windows, Linux or macOS — with no extra flags.
+
+Release build, self-contained (bundles its own .NET runtime, so the target machine needs nothing
+installed). Pick the runtime identifier for where it will run:
 
 ```
+# Windows
 dotnet publish Steam2Browser/Steam2Browser.csproj -c Release -r win-x64 --self-contained true \
+  -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o out
+
+# Linux (Arch and others)
+dotnet publish Steam2Browser/Steam2Browser.csproj -c Release -r linux-x64 --self-contained true \
   -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o out
 ```
 

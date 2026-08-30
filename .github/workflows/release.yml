@@ -11,7 +11,97 @@ permissions:
   contents: write
 
 jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build catalog snapshot
+        # Pulls the index and directory listings once and compacts them to ~4.5 MB, which the
+        # publish step below embeds. Best effort: if the mirrors are unreachable from the runner
+        # the release still ships, and the app falls back to fetching the index itself. Built
+        # separately from the Windows job's snapshot since the two run on different runners.
+        continue-on-error: true
+        run: |
+          dotnet run --project Steam2Browser/Steam2Browser.csproj -c Release \
+            -- --build-index Steam2Browser/index.bin --with-sizes
+
+      - name: Publish
+        run: |
+          dotnet publish Steam2Browser/Steam2Browser.csproj \
+            -c Release -r linux-x64 --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:EnableCompressionInSingleFile=true \
+            -p:PublishTrimmed=false \
+            -p:DebugType=none \
+            -o publish
+
+      - name: Trim publish leftovers
+        # The UI and the depot key table are embedded in the binary, so the loose copies
+        # ASP.NET emits are dead weight.
+        run: |
+          rm -rf publish/wwwroot
+          rm -f publish/*.staticwebassets.endpoints.json
+          chmod +x publish/steam2browser
+          ls -la publish
+
+      - name: Smoke test
+        # Catches a build that publishes but cannot start — the embedded UI failing to resolve
+        # would otherwise only show up on a user's machine.
+        run: |
+          ./publish/steam2browser --no-browser --port=5099 &
+          pid=$!
+
+          page=""
+          for i in $(seq 1 30); do
+            sleep 2
+            if page=$(curl -fsS http://127.0.0.1:5099/ 2>/dev/null); then break; fi
+            page=""
+          done
+
+          problems=()
+          if [ -z "$page" ]; then
+            problems+=("the binary never answered on port 5099")
+          else
+            echo "$page" | grep -q 'id="depotList"' || problems+=("the page has no depot list")
+            echo "$page" | grep -q 'app\.js' || problems+=("the page does not load app.js")
+
+            for asset in style.css app.js; do
+              len=$(curl -fsS "http://127.0.0.1:5099/$asset" 2>/dev/null | wc -c)
+              if [ -z "$len" ] || [ "$len" -lt 100 ]; then
+                problems+=("$asset came back empty or missing")
+              fi
+            done
+          fi
+
+          kill "$pid" 2>/dev/null || true
+
+          if [ "${#problems[@]}" -gt 0 ]; then
+            printf 'FAILED: %s\n' "${problems[@]}"
+            exit 1
+          fi
+          echo "served the page, style.css and app.js"
+
+      - name: Package
+        run: |
+          cp README.md publish/
+          cp contrib/steam2browser.service publish/
+          tar -C publish -czf steam2browser-linux-x64.tar.gz .
+          ls -la steam2browser-linux-x64.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: steam2browser-linux-x64
+          path: steam2browser-linux-x64.tar.gz
+
   release:
+    needs: build-linux
     runs-on: windows-latest
 
     steps:
@@ -122,6 +212,10 @@ jobs:
           name: steam2browser-win-x64
           path: steam2browser-win-x64.zip
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: steam2browser-linux-x64
+
       - name: Release
         shell: pwsh
         env:
@@ -134,11 +228,16 @@ jobs:
           $notes = @"
           Built from commit $sha.
 
-          Download ``steam2browser-win-x64.zip``, unzip, run ``steam2browser.exe``.
-          Self-contained: no .NET install needed. Everything it writes goes to ``steam2info/``
-          next to the executable.
+          Windows: download ``steam2browser-win-x64.zip``, unzip, run ``steam2browser.exe``.
+
+          Linux (Arch and others): download ``steam2browser-linux-x64.tar.gz``, extract, run
+          ``./steam2browser --no-browser``. Includes an example systemd unit
+          (``steam2browser.service``) for running it headless on a VPS.
+
+          Both are self-contained: no .NET install needed. Everything the app writes goes to
+          ``steam2info/`` next to the executable.
           "@
-          gh release create $tag steam2browser-win-x64.zip `
+          gh release create $tag steam2browser-win-x64.zip steam2browser-linux-x64.tar.gz `
             --title $tag `
             --notes $notes `
             --target ${{ github.sha }}
