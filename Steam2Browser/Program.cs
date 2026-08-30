@@ -13,6 +13,17 @@ foreach (var arg in args)
         port = p;
 bool noBrowser = args.Contains("--no-browser", StringComparer.OrdinalIgnoreCase);
 
+// Loopback by default: nothing outside the machine can reach the app, and it has no login of its
+// own. --public binds every interface (0.0.0.0) so it answers on the VPS's real IP with no
+// firewall involved — anyone who can reach that IP:port can browse, download and extract through
+// it, so this is opt-in and printed loudly below rather than assumed.
+bool publicBind = args.Contains("--public", StringComparer.OrdinalIgnoreCase);
+string host = "127.0.0.1";
+foreach (var arg in args)
+    if (arg.StartsWith("--host=", StringComparison.OrdinalIgnoreCase))
+        host = arg[7..];
+if (publicBind && host == "127.0.0.1") host = "0.0.0.0";
+
 var handler = new SocketsHttpHandler
 {
     MaxConnectionsPerServer = 64,
@@ -96,11 +107,12 @@ if (buildIndexAt >= 0)
 // Kestrel only discovers a busy port deep inside app.Run(), where the failure surfaces as a wall
 // of stack trace. Settle it here instead: hand the user over to an instance that is already
 // running, or step aside to the next free port.
-static bool PortIsFree(int candidate)
+static bool PortIsFree(string bindHost, int candidate)
 {
     try
     {
-        var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, candidate);
+        var address = bindHost == "0.0.0.0" ? System.Net.IPAddress.Any : System.Net.IPAddress.Parse(bindHost);
+        var probe = new System.Net.Sockets.TcpListener(address, candidate);
         probe.Start();
         probe.Stop();
         return true;
@@ -111,12 +123,15 @@ static bool PortIsFree(int candidate)
     }
 }
 
-static async Task<bool> AnotherInstanceAsync(int candidate)
+static async Task<bool> AnotherInstanceAsync(string bindHost, int candidate)
 {
     try
     {
+        // 0.0.0.0 is a bind address, not a reachable one — probing it always fails, so ask on
+        // loopback instead, which any bind (including 0.0.0.0) also answers on.
+        string probeHost = bindHost == "0.0.0.0" ? "127.0.0.1" : bindHost;
         using var probe = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-        var body = await probe.GetStringAsync($"http://127.0.0.1:{candidate}/api/state");
+        var body = await probe.GetStringAsync($"http://{probeHost}:{candidate}/api/state");
         return body.Contains("\"mirrors\"", StringComparison.Ordinal);
     }
     catch
@@ -125,11 +140,11 @@ static async Task<bool> AnotherInstanceAsync(int candidate)
     }
 }
 
-if (!PortIsFree(port))
+if (!PortIsFree(host, port))
 {
-    if (await AnotherInstanceAsync(port))
+    if (await AnotherInstanceAsync(host, port))
     {
-        string running = $"http://127.0.0.1:{port}/";
+        string running = $"http://{(host == "0.0.0.0" ? "127.0.0.1" : host)}:{port}/";
         Console.WriteLine($"steam2browser is already running at {running} — opening that one");
 
         if (!noBrowser)
@@ -140,7 +155,7 @@ if (!PortIsFree(port))
         return 0;
     }
 
-    int free = Enumerable.Range(port + 1, 20).FirstOrDefault(PortIsFree, -1);
+    int free = Enumerable.Range(port + 1, 20).FirstOrDefault(p => PortIsFree(host, p), -1);
     if (free < 0)
     {
         Console.Error.WriteLine($"port {port} is taken and nothing is free through {port + 20}.");
@@ -154,7 +169,7 @@ if (!PortIsFree(port))
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, ContentRootPath = baseDir });
 builder.Logging.ClearProviders();
-builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
+builder.WebHost.UseUrls($"http://{host}:{port}");
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
     o.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
@@ -866,8 +881,17 @@ _ = Task.Run(async () =>
     names.StartSteam(loader.Catalog);
 });
 
-string url = $"http://127.0.0.1:{port}/";
-Console.WriteLine($"steam2browser  ->  {url}");
+string localUrl = $"http://{(host == "0.0.0.0" ? "127.0.0.1" : host)}:{port}/";
+string url = localUrl;
+Console.WriteLine($"steam2browser  ->  {localUrl}");
+if (host == "0.0.0.0")
+{
+    Console.WriteLine();
+    Console.WriteLine("*** listening on every network interface (--public) ***");
+    Console.WriteLine("*** this app has no login of its own — anyone who can reach this machine's ***");
+    Console.WriteLine("*** IP on this port can browse, download and extract through it.           ***");
+    Console.WriteLine();
+}
 Console.WriteLine($"data dir: {settings.DataDir}");
 Console.WriteLine("press Ctrl+C to stop");
 

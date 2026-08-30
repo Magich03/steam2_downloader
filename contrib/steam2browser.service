@@ -10,9 +10,13 @@
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now steam2browser
 #
-# The app binds to 127.0.0.1 only (never 0.0.0.0), so it is not reachable from outside the VPS by
+# By default the app binds to 127.0.0.1 only, so it is not reachable from outside the VPS by
 # itself. Reach it over SSH port forwarding — see the README's "Arch Linux VPS" section — rather
 # than opening a firewall port to it, since it has no authentication of its own.
+#
+# To expose it directly on the VPS's public IP instead, add --public to ExecStart below and put a
+# firewall rule in front of it restricting who can reach the port (see the README) — with no such
+# rule, --public leaves the app, and everything it can do, open to the whole internet.
 
 [Unit]
 Description=Steam2 Downloader (headless)
