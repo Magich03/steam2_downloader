@@ -17,6 +17,13 @@
     -->
     <RuntimeIdentifiers>win-x64;linux-x64</RuntimeIdentifiers>
     <ServerGarbageCollection>true</ServerGarbageCollection>
+    <!--
+      Works around NETSDK1226 ("Prune Package data not found ... Microsoft.AspNetCore.App") that
+      some .NET 10 SDK builds hit when restoring/publishing for a RID other than the one the SDK
+      itself runs on (e.g. publishing linux-x64 from an SDK installed for linux-x64, or any
+      cross-publish). See https://github.com/dotnet/sdk/issues/52058 — harmless to leave set.
+    -->
+    <AllowMissingPrunePackageData>true</AllowMissingPrunePackageData>
   </PropertyGroup>
 
   <ItemGroup>
