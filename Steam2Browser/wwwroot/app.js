@@ -1102,13 +1102,58 @@ function extractHint(folderName) {
   return box;
 }
 
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
 async function doExtract(depot, version, blobCrc) {
+  // #planOut only exists while that depot's detail panel is open — "Extract now" on a job card in
+  // the Activity list can fire with it absent (a different depot open, or none at all), so the
+  // inline progress view is best-effort and the Activity list card underneath it always still works.
+  const out = $('#planOut');
+  if (out) {
+    out.innerHTML = '';
+    out.append(el('div', 'muted', 'starting extraction…'));
+  }
+
+  let runId;
   try {
-    await api.post('/api/extract', { depot, version, blobCrc: blobCrc || null, filter: null });
-    applyActivity(true);
-    pollExtract();
+    const res = await api.post('/api/extract', { depot, version, blobCrc: blobCrc || null, filter: null });
+    runId = res.runId;
   } catch (e) {
-    alert('Extract failed to start: ' + (e.message || e));
+    if (out) {
+      out.innerHTML = '';
+      out.append(note('bad', 'Extract failed to start', e.message || String(e)));
+    } else {
+      alert('Extract failed to start: ' + (e.message || e));
+    }
+    return;
+  }
+
+  applyActivity(true);
+  pollExtract();
+  if (out) watchExtract(runId, out);
+}
+
+// Polls the one run this click started and mirrors its progress bar and log right where Extract
+// was pressed — the same card also lives in the Activity list below, but that one is easy to miss,
+// and the log line is the only place a failure (missing key, an unhandled file mode, …) explains
+// itself instead of just leaving the click looking like it did nothing.
+let extractWatchToken = 0;
+async function watchExtract(runId, out) {
+  const mine = ++extractWatchToken;
+
+  for (;;) {
+    let runs;
+    try { runs = await api.get('/api/extract'); } catch { await sleep(1000); continue; }
+
+    if (mine !== extractWatchToken) return; // a newer Extract click took over this panel
+    const run = runs.find((r) => r.id === runId);
+    if (!run) return;
+
+    out.innerHTML = '';
+    out.append(extractCard(run));
+
+    if (run.status !== 'running') return;
+    await sleep(1000);
   }
 }
 
