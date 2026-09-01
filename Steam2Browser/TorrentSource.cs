@@ -78,6 +78,19 @@ public sealed class TorrentSource(Settings settings)
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly SemaphoreSlim _seedGate = new(1, 1);
 
+    /// <summary>
+    /// Serializes the whole select → start → wait → stop cycle in <see cref="DownloadAsync"/>.
+    ///
+    /// There is one engine, one manager and one picker for the whole app — <see cref="_selection"/>
+    /// and <see cref="_requester"/> are single fields, not per-caller state — so two downloads that
+    /// both pick the swarm as their mirror at the same time were racing on them: one overwrote the
+    /// other's selection, and both could call StartAsync/StopAsync on the same manager at once, which
+    /// MonoTorrent answers with "The manager cannot be stopped while it is already in the Stopping
+    /// state." Everything here already assumed a single download in flight (DownloadInFlight reads
+    /// _selection as a bool); this just makes that assumption true instead of merely assumed.
+    /// </summary>
+    private readonly SemaphoreSlim _downloadGate = new(1, 1);
+
     private TorrentManager? _seedManager;
 
     /// <summary>
@@ -850,37 +863,48 @@ public sealed class TorrentSource(Settings settings)
 
         if (selected.Count == 0) return missing;
 
-        _selection = selected.Select(x => x.File).ToList();
-        requester.Select(_selection);
-
-        Status.State = "downloading";
-        Status.Message = $"{selected.Count} files selected from the swarm";
-
+        // One engine, one manager, one selection: a second download picked while this one is still
+        // selecting/starting/stopping the shared manager would race it (see _downloadGate). Released
+        // again before the publish loop below, which only touches local state and disk.
+        await _downloadGate.WaitAsync(ct);
         try
         {
-            await manager.StartAsync();
+            _selection = selected.Select(x => x.File).ToList();
+            requester.Select(_selection);
 
-            // Every piece of every selected file, which is all the picker will ever ask for.
-            while (!SelectionComplete())
+            Status.State = "downloading";
+            Status.Message = $"{selected.Count} files selected from the swarm";
+
+            try
             {
-                ct.ThrowIfCancellationRequested();
+                await manager.StartAsync();
+
+                // Every piece of every selected file, which is all the picker will ever ask for.
+                while (!SelectionComplete())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    Sample();
+
+                    long done = (long)(Status.SelectedBytes * Status.SelectedProgress / 100.0);
+                    onProgress?.Invoke(done, Status.SelectedBytes, manager.Monitor.DownloadRate);
+
+                    await Task.Delay(1000, ct);
+                }
+
                 Sample();
-
-                long done = (long)(Status.SelectedBytes * Status.SelectedProgress / 100.0);
-                onProgress?.Invoke(done, Status.SelectedBytes, manager.Monitor.DownloadRate);
-
-                await Task.Delay(1000, ct);
+                onProgress?.Invoke(Status.SelectedBytes, Status.SelectedBytes, 0);
             }
-
-            Sample();
-            onProgress?.Invoke(Status.SelectedBytes, Status.SelectedBytes, 0);
+            finally
+            {
+                // Stop as soon as the selection is in; leaving it running would start on everything else.
+                await manager.StopAsync(TimeSpan.FromSeconds(10));
+                requester.SelectNone();
+                _selection = Array.Empty<ITorrentManagerFile>();
+            }
         }
         finally
         {
-            // Stop as soon as the selection is in; leaving it running would start on everything else.
-            await manager.StopAsync(TimeSpan.FromSeconds(10));
-            requester.SelectNone();
-            _selection = Array.Empty<ITorrentManagerFile>();
+            _downloadGate.Release();
         }
 
         // Hand the results to the archive, where the rest of the app expects to find them.

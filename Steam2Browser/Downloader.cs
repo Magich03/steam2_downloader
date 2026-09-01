@@ -518,10 +518,24 @@ public sealed class DownloadManager(ArchiveClient client, Settings settings, Tor
 
         job.Say("waiting for the torrent file list");
 
-        var missing = await torrent.DownloadAsync(
-            needed.Select(f => f.Entry).ToList(),
-            (done, _, _) => Interlocked.Exchange(ref job.DoneBytes, done),
-            ct);
+        List<Entry> missing;
+        try
+        {
+            missing = await torrent.DownloadAsync(
+                needed.Select(f => f.Entry).ToList(),
+                (done, _, _) => Interlocked.Exchange(ref job.DoneBytes, done),
+                ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            // The swarm is one of four sources, and the three HTTP mirrors do not depend on it —
+            // a torrent engine problem (a metadata timeout, a manager fault) used to fail the whole
+            // job outright even though every file it wanted is also on the mirrors. Falling every
+            // needed file through to HTTP instead keeps the download going on the sources that work.
+            job.Say($"torrent source failed: {ex.Message} — falling back to HTTP for {needed.Count} file(s)");
+            return needed;
+        }
 
         var missingNames = missing.Select(e => e.FileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
         job.DoneFiles += needed.Count - missingNames.Count;
