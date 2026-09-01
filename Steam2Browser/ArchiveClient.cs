@@ -20,6 +20,14 @@ public sealed class ArchiveClient(HttpClient http)
     private const int MaxRangeFailuresWithoutProgress = 6;
     private static readonly TimeSpan ReadInactivityTimeout = TimeSpan.FromSeconds(20);
 
+    // How many times the whole mirror list is retried after every mirror has failed once, before a
+    // file is finally given up on. The .part file is never discarded between rounds (PlanResume only
+    // drops it when a mirror actively proves the resume is worthless), so a round restarts from
+    // wherever the last one left off — a flaky uplink or a mirror hiccup costs time, not bytes.
+    private const int MaxRetryRounds = 8;
+    private static readonly TimeSpan[] RetryBackoff =
+        [TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(6), TimeSpan.FromSeconds(12), TimeSpan.FromSeconds(30)];
+
     // DownloadManager limits files, while this gate limits the actual HTTP streams. Without it,
     // several files with many ranges each can overload the mirror and leave every stream starved.
     private readonly SemaphoreSlim transferGate = new(MaxConcurrentTransfers, MaxConcurrentTransfers);
@@ -216,7 +224,8 @@ public sealed class ArchiveClient(HttpClient http)
         string destPath,
         bool verify,
         Action<long, long>? onProgress,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Action<string>? onRetry = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
 
@@ -265,33 +274,48 @@ public sealed class ArchiveClient(HttpClient http)
             }
         }
 
-        var (order, planned) = PlanResume(entry, resumeFrom);
-        if (planned == 0 && resumeFrom > 0) TryDelete(partPath);
-        resumeFrom = planned;
-
         Exception? last = null;
-        foreach (var m in order)
+        for (int round = 0; round < MaxRetryRounds; round++)
         {
-            try
+            if (round > 0)
             {
-                long pulled = await PullAsync(m, entry, partPath, resumeFrom, onProgress, ct);
-
-                if (verify && !await VerifyAsync(partPath, entry.Sha, ct))
-                {
-                    File.Delete(partPath);
-                    resumeFrom = 0;
-                    last = new InvalidDataException($"sha256 mismatch for {entry.FileName} from {m.Id}");
-                    continue;
-                }
-
-                File.Move(partPath, destPath, overwrite: true);
-                return pulled;
+                var delay = RetryBackoff[Math.Min(round - 1, RetryBackoff.Length - 1)];
+                onRetry?.Invoke(
+                    $"{entry.FileName}: {last?.Message ?? "every mirror failed"} — " +
+                    $"retrying ({round + 1}/{MaxRetryRounds}) in {delay.TotalSeconds:0}s, " +
+                    $"{resumeFrom / 1_000_000.0:0.0} MB already saved");
+                await Task.Delay(delay, ct);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (Exception ex)
+
+            // Re-planned every round: mirror speeds and reachability can change between attempts,
+            // and this is also what decides whether the .part file is still worth resuming from.
+            var (order, planned) = PlanResume(entry, resumeFrom);
+            if (planned == 0 && resumeFrom > 0) TryDelete(partPath);
+            resumeFrom = planned;
+
+            foreach (var m in order)
             {
-                last = ex;
-                resumeFrom = File.Exists(partPath) ? new FileInfo(partPath).Length : 0;
+                try
+                {
+                    long pulled = await PullAsync(m, entry, partPath, resumeFrom, onProgress, ct);
+
+                    if (verify && !await VerifyAsync(partPath, entry.Sha, ct))
+                    {
+                        File.Delete(partPath);
+                        resumeFrom = 0;
+                        last = new InvalidDataException($"sha256 mismatch for {entry.FileName} from {m.Id}");
+                        continue;
+                    }
+
+                    File.Move(partPath, destPath, overwrite: true);
+                    return pulled;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    last = ex;
+                    resumeFrom = File.Exists(partPath) ? new FileInfo(partPath).Length : 0;
+                }
             }
         }
         throw last ?? new HttpRequestException($"could not download {entry.FileName}");

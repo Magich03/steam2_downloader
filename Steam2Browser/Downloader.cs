@@ -580,7 +580,7 @@ public sealed class DownloadManager(ArchiveClient client, Settings settings, Tor
                     counted = done;
                     Interlocked.Add(ref job.DoneBytes, delta);
                 }
-            }, ct);
+            }, ct, onRetry: msg => job.Say(msg));
 
             fp.State = existed ? "skipped" : "done";
             if (existed) Interlocked.Increment(ref job.SkippedFiles);

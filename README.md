@@ -74,6 +74,46 @@ in well under a second. Fetching that index instead means 13 MB of `*_dates.txt`
 directory listings for the sizes — about 54 MB before anything appears. **Re-download index** in
 Settings pulls a fresher one when you want it.
 
+## Running on a headless server (VPS)
+
+`--no-browser` above is enough to run it on a machine with no desktop — the app itself is unchanged,
+it just does not try to open anything. What differs is how you reach the page it serves, since by
+default it only binds to loopback:
+
+* **SSH tunnel, no extra setup.** Run it normally on the server, then from your own machine:
+  `ssh -N -L 5099:127.0.0.1:5099 you@your-server` and open `http://127.0.0.1:5099/` locally. Nothing
+  leaves the SSH connection, and nothing extra is exposed on the server.
+* **`--public`**, to reach it directly at the server's own IP from any device, no tunnel needed:
+  `./steam2browser --no-browser --public`. This binds every interface (`0.0.0.0`) instead of only
+  loopback. **The app has no login of its own** — with `--public`, anyone who can reach that IP and
+  port can browse, download and extract through it. Put a firewall rule in front of it if that is
+  not what you want, e.g. with `ufw`:
+  ```
+  sudo ufw default deny incoming
+  sudo ufw allow from YOUR.HOME.IP.ADDR to any port 5099
+  sudo ufw enable
+  ```
+  `--host=<address>` binds one specific interface instead of every one, for anything narrower than
+  `--public`.
+
+To keep it running after you disconnect, a systemd unit is the simplest option on a VPS. Adjust the
+paths to wherever you unzipped the release, then:
+
+```
+sudo useradd --system --create-home --home-dir /opt/steam2browser steam2browser
+sudo mkdir -p /opt/steam2browser/steam2info
+sudo cp -r . /opt/steam2browser/          # from the unzipped release directory
+sudo chown -R steam2browser:steam2browser /opt/steam2browser
+sudo cp contrib/steam2browser.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now steam2browser
+journalctl -u steam2browser -f            # follow its log
+```
+
+See [`contrib/steam2browser.service`](contrib/steam2browser.service) for the unit itself — it runs
+under a dedicated unprivileged user with the rest of the filesystem read-only (`ProtectSystem=strict`),
+only `steam2info/` writable.
+
 ## Features
 
 ### Browse depots

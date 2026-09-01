@@ -13,6 +13,18 @@ foreach (var arg in args)
         port = p;
 bool noBrowser = args.Contains("--no-browser", StringComparer.OrdinalIgnoreCase);
 
+// Loopback by default: nothing outside the machine can reach the app, and it has no login of its
+// own. --public binds every interface (0.0.0.0) so it answers on the machine's real IP with no
+// firewall involved — anyone who can reach that IP:port can browse, download and extract through
+// it, so this is opt-in and printed loudly in the startup banner below rather than assumed.
+// --host=<addr> binds a specific interface instead, for anyone who wants something narrower.
+bool publicBind = args.Contains("--public", StringComparer.OrdinalIgnoreCase);
+string? bindHost = null;
+foreach (var arg in args)
+    if (arg.StartsWith("--host=", StringComparison.OrdinalIgnoreCase))
+        bindHost = arg[7..];
+if (publicBind && bindHost is null) bindHost = "0.0.0.0";
+
 var handler = new SocketsHttpHandler
 {
     MaxConnectionsPerServer = 64,
@@ -162,11 +174,14 @@ static string AddressFor(int p) => p == 80
 // Kestrel only discovers a busy port deep inside app.Run(), where the failure surfaces as a wall
 // of stack trace. Settle it here instead: hand the user over to an instance that is already
 // running, or step aside to the next free port.
-static bool PortIsFree(int candidate)
+static bool PortIsFree(string? bindHost, int candidate)
 {
     try
     {
-        var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, candidate);
+        var address = bindHost is null ? System.Net.IPAddress.Loopback
+            : bindHost == "0.0.0.0" ? System.Net.IPAddress.Any
+            : System.Net.IPAddress.Parse(bindHost);
+        var probe = new System.Net.Sockets.TcpListener(address, candidate);
         probe.Start();
         probe.Stop();
         return true;
@@ -191,7 +206,7 @@ static async Task<bool> AnotherInstanceAsync(int candidate)
     }
 }
 
-if (!PortIsFree(port))
+if (!PortIsFree(bindHost, port))
 {
     if (await AnotherInstanceAsync(port))
     {
@@ -206,7 +221,7 @@ if (!PortIsFree(port))
         return 0;
     }
 
-    int free = Enumerable.Range(port + 1, 20).FirstOrDefault(PortIsFree, -1);
+    int free = Enumerable.Range(port + 1, 20).FirstOrDefault(p => PortIsFree(bindHost, p), -1);
     if (free < 0)
     {
         Console.Error.WriteLine($"port {port} is taken and nothing is free through {port + 20}.");
@@ -224,7 +239,10 @@ builder.Logging.ClearProviders();
 // one. A browser resolving steam2.localhost is free to pick ::1, and on an IPv4-only listener that
 // arrives as a refused connection — the name would work on one machine and not the next for a
 // reason nobody could see. Still loopback either way: nothing is reachable from the network.
-builder.WebHost.UseUrls($"http://localhost:{port}");
+//
+// --public / --host= override this with a real bind address instead, so the app answers on the
+// machine's actual IP rather than only to itself — see the warning printed once it starts.
+builder.WebHost.UseUrls($"http://{bindHost ?? "localhost"}:{port}");
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
     o.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
@@ -1148,6 +1166,16 @@ Console.WriteLine($"steam2browser  ->  {url}");
 // somebody staring at a name that will not open needs the address that always works on the line
 // below, not in an issue thread.
 Console.WriteLine($"               or  http://127.0.0.1{(port == 80 ? "" : $":{port}")}/");
+if (bindHost is not null)
+{
+    Console.WriteLine();
+    Console.WriteLine($"*** also listening on {bindHost} (--public or --host=) — reachable at this ***");
+    Console.WriteLine($"*** machine's real IP on port {port} from other devices.                          ***");
+    Console.WriteLine( "*** this app has no login of its own — anyone who can reach that IP and port ***");
+    Console.WriteLine( "*** can browse, download and extract through it. Restrict access with a       ***");
+    Console.WriteLine( "*** firewall rule if that is not what you want.                                ***");
+    Console.WriteLine();
+}
 Console.WriteLine($"data dir: {settings.DataDir}");
 Console.WriteLine("press Ctrl+C to stop");
 

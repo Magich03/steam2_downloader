@@ -193,6 +193,7 @@ jobs:
 
           Copy-Item README.md publish/win-x64/
           Copy-Item README.md publish/linux-x64/
+          Copy-Item -Recurse contrib publish/linux-x64/contrib
           Compress-Archive -Path publish/win-x64/* -DestinationPath steam2browser-win-x64.zip -Force
           Compress-Archive -Path publish/linux-x64/* -DestinationPath steam2browser-linux-x64.zip -Force
           Get-Item steam2browser-win-x64.zip, steam2browser-linux-x64.zip | Select-Object Name, Length

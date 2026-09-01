@@ -1,0 +1,42 @@
+# systemd unit for running steam2browser headless on a VPS.
+#
+# Install:
+#   sudo useradd --system --create-home --home-dir /opt/steam2browser steam2browser
+#   sudo mkdir -p /opt/steam2browser/steam2info       # must exist before start: ProtectSystem=strict
+#   sudo cp -r . /opt/steam2browser/                  # from the unzipped release directory
+#   sudo chown -R steam2browser:steam2browser /opt/steam2browser
+#   sudo cp contrib/steam2browser.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now steam2browser
+#
+# By default the app binds to loopback only, so it is not reachable from outside the machine by
+# itself — reach it over SSH port forwarding (see the README's "Running on a headless server"
+# section) rather than opening a firewall port to it, since it has no authentication of its own.
+#
+# To expose it directly on the machine's public IP instead, add --public to ExecStart below and put
+# a firewall rule in front of it restricting who can reach the port (see the README) — with no such
+# rule, --public leaves the app, and everything it can do, open to the whole internet.
+
+[Unit]
+Description=Steam2 Downloader (headless)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=steam2browser
+Group=steam2browser
+WorkingDirectory=/opt/steam2browser
+ExecStart=/opt/steam2browser/steam2browser --no-browser --port=5099
+Restart=on-failure
+RestartSec=5
+
+# Everything the app writes lives under WorkingDirectory/steam2info/, so only that needs to be
+# writable; the rest of the filesystem stays read-only to this service.
+ProtectSystem=strict
+ReadWritePaths=/opt/steam2browser/steam2info
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
